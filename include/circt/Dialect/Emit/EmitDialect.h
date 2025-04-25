@@ -13,7 +13,6 @@
 #ifndef CIRCT_DIALECT_EMIT_EMITDIALECT_H
 #define CIRCT_DIALECT_EMIT_EMITDIALECT_H
 
-#include "circt/Dialect/HW/HWAttributes.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/Dialect.h"
 

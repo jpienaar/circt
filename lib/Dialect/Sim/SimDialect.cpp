@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Sim/SimDialect.h"
-#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Sim/SimOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"

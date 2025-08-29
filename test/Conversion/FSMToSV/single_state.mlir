@@ -1,7 +1,8 @@
-// RUN: circt-opt -convert-fsm-to-sv -lower-seq-to-sv -export-verilog %s -o /dev/null | FileCheck %s
+// RUN: circt-opt -convert-fsm-to-sv %s | FileCheck %s
 
-// Smoke test to verify single state lowering to verilog is supported.
-// CHECK: module top
+// CHECK:      case A:
+// CHECK-NEXT: sv.bpassign
+// CHECK-SAME: !hw.typealias<@fsm_enum_typedecls::@FSM_state_t, !hw.enum<A>>
 
 fsm.machine @FSM(%arg0: i1, %arg1: i1) -> (i8) attributes {initialState = "A"} {
   %c_0 = hw.constant 0 : i8

@@ -54,15 +54,15 @@ func.func @StorageTypes(%arg0: !arc.storage) -> (!arc.state<i1>, !arc.memory<4 x
 // CHECK-SAME:    %arg0: !llvm.ptr) {
 func.func @StateAllocation(%arg0: !arc.storage) {
   arc.root_input "a", %arg0 {offset = 0} : (!arc.storage) -> !arc.state<i1>
-  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr %arg0[0]
+  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr inbounds %arg0[0]
   arc.root_output "b", %arg0 {offset = 1} : (!arc.storage) -> !arc.state<i2>
-  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr %arg0[1]
+  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr inbounds %arg0[1]
   arc.alloc_state %arg0 {offset = 2} : (!arc.storage) -> !arc.state<i3>
-  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr %arg0[2]
+  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr inbounds %arg0[2]
   arc.alloc_memory %arg0 {offset = 3, stride = 1} : (!arc.storage) -> !arc.memory<4 x i1, i2>
-  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr %arg0[3]
+  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr inbounds %arg0[3]
   arc.alloc_storage %arg0[7], 3
-  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr %arg0[7]
+  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr inbounds %arg0[7]
   return
   // CHECK-NEXT: llvm.return
 }
@@ -72,7 +72,7 @@ func.func @StateAllocation(%arg0: !arc.storage) {
 // CHECK-SAME:    %arg0: !llvm.ptr) {
 func.func @StateUpdates(%arg0: !arc.storage) {
   %0 = arc.alloc_state %arg0 {offset = 0} : (!arc.storage) -> !arc.state<i1>
-  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr %arg0[0]
+  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr inbounds %arg0[0]
   %1 = arc.state_read %0 : <i1>
   // CHECK-NEXT: [[LOAD:%.+]] = llvm.load [[PTR]] : !llvm.ptr -> i1
   arc.state_write %0 = %1 : <i1>
@@ -86,7 +86,7 @@ func.func @StateUpdates(%arg0: !arc.storage) {
 // CHECK-SAME:    %arg0: !llvm.ptr, %arg1: i1) {
 func.func @MemoryUpdates(%arg0: !arc.storage, %enable: i1) {
   %0 = arc.alloc_memory %arg0 {offset = 0, stride = 6} : (!arc.storage) -> !arc.memory<4 x i42, i19>
-  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr %arg0[0]
+  // CHECK-NEXT: [[PTR:%.+]] = llvm.getelementptr inbounds %arg0[0]
 
   %clk = hw.constant true
   %c3_i19 = hw.constant 3 : i19

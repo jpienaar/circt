@@ -104,9 +104,10 @@ struct AllocStorageOpLowering
     auto type = typeConverter->convertType(op.getType());
     if (!op.getOffset().has_value())
       return failure();
-    rewriter.replaceOpWithNewOp<LLVM::GEPOp>(op, type, rewriter.getI8Type(),
-                                             adaptor.getInput(),
-                                             LLVM::GEPArg(*op.getOffset()));
+    Value ptr = LLVM::GEPOp::create(
+        rewriter, op.getLoc(), type, rewriter.getI8Type(), adaptor.getInput(),
+        LLVM::GEPArg(*op.getOffset()), LLVM::GEPNoWrapFlags::inbounds);
+    rewriter.replaceOp(op, ptr);
     return success();
   }
 };
@@ -127,7 +128,8 @@ struct AllocStateLikeOpLowering : public OpConversionPattern<ConcreteOp> {
     Value ptr = LLVM::GEPOp::create(
         rewriter, op->getLoc(), adaptor.getStorage().getType(),
         rewriter.getI8Type(), adaptor.getStorage(),
-        LLVM::GEPArg(offsetAttr.getValue().getZExtValue()));
+        LLVM::GEPArg(offsetAttr.getValue().getZExtValue()),
+        LLVM::GEPNoWrapFlags::inbounds);
     rewriter.replaceOp(op, ptr);
     return success();
   }
@@ -274,7 +276,8 @@ struct AllocMemoryOpLowering : public OpConversionPattern<arc::AllocMemoryOp> {
     Value ptr = LLVM::GEPOp::create(
         rewriter, op.getLoc(), adaptor.getStorage().getType(),
         rewriter.getI8Type(), adaptor.getStorage(),
-        LLVM::GEPArg(offsetAttr.getValue().getZExtValue()));
+        LLVM::GEPArg(offsetAttr.getValue().getZExtValue()),
+        LLVM::GEPNoWrapFlags::inbounds);
 
     rewriter.replaceOp(op, ptr);
     return success();
@@ -1562,6 +1565,19 @@ struct ArrayRefCreateOpLowering : public OpConversionPattern<ArrayRefCreateOp> {
   }
 };
 
+static std::optional<APInt> getConstantIntIndex(Value val) {
+  APInt intVal;
+  if (matchPattern(val, m_ConstantInt(&intVal)))
+    return intVal;
+  if (Operation *op = val.getDefiningOp()) {
+    for (Value operand : op->getOperands()) {
+      if (std::optional<APInt> res = getConstantIntIndex(operand))
+        return res;
+    }
+  }
+  return std::nullopt;
+}
+
 struct ArrayRefGetOpLowering : public OpConversionPattern<ArrayRefGetOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1582,14 +1598,24 @@ struct ArrayRefGetOpLowering : public OpConversionPattern<ArrayRefGetOp> {
         LLVM::MulOp::create(rewriter, loc, adaptor.getIndex(), stride);
     // Defend against out-of-bounds accesses. What we return is undefined in the
     // case of OOB.
-    size_t lastElementByteOffset =
-        elemByteWidth * (arrayRefType.getNumElements() - 1);
-    Value lastElementByteOffsetVal =
-        LLVM::ConstantOp::create(rewriter, loc, i64Ty, lastElementByteOffset);
-    Value clampedOffset = LLVM::UMinOp::create(rewriter, loc, i64Ty, byteOffset,
-                                               lastElementByteOffsetVal);
-    auto elemAddr = LLVM::GEPOp::create(rewriter, loc, ptrTy, i8Ty,
-                                        adaptor.getInput(), clampedOffset);
+    std::optional<APInt> constIndex = getConstantIntIndex(op.getIndex());
+    if (!constIndex)
+      constIndex = getConstantIntIndex(adaptor.getIndex());
+
+    Value offsetToUse;
+    if (constIndex && constIndex->ult(arrayRefType.getNumElements())) {
+      offsetToUse = byteOffset;
+    } else {
+      size_t lastElementByteOffset =
+          elemByteWidth * (arrayRefType.getNumElements() - 1);
+      Value lastElementByteOffsetVal =
+          LLVM::ConstantOp::create(rewriter, loc, i64Ty, lastElementByteOffset);
+      offsetToUse = LLVM::UMinOp::create(rewriter, loc, i64Ty, byteOffset,
+                                         lastElementByteOffsetVal);
+    }
+    Value elemAddr =
+        LLVM::GEPOp::create(rewriter, loc, ptrTy, i8Ty, adaptor.getInput(),
+                            offsetToUse, LLVM::GEPNoWrapFlags::inbounds);
     Value loaded = LLVM::LoadOp::create(
         rewriter, loc, typeConverter->convertType(op.getValue().getType()),
         elemAddr);
@@ -1617,17 +1643,31 @@ struct ArrayRefInjectOpLowering : public OpConversionPattern<ArrayRefInjectOp> {
         LLVM::ConstantOp::create(rewriter, loc, i64Ty, elemByteWidth);
     Value byteOffset =
         LLVM::MulOp::create(rewriter, loc, adaptor.getIndex(), stride);
-    Value totalSize = LLVM::ConstantOp::create(rewriter, loc, i64Ty, byteWidth);
-    // Defend against out-of-bounds accesses. We must avoid corrupting the
-    // array.
-    Value isInbounds = LLVM::ICmpOp::create(
-        rewriter, loc, LLVM::ICmpPredicate::ult, byteOffset, totalSize);
-    scf::IfOp::create(rewriter, loc, isInbounds, [&](OpBuilder &b, Location) {
-      auto elemAddr = LLVM::GEPOp::create(b, loc, ptrTy, i8Ty,
-                                          adaptor.getInput(), byteOffset);
-      LLVM::StoreOp::create(b, loc, adaptor.getElement(), elemAddr);
-      scf::YieldOp::create(b, loc);
-    });
+
+    std::optional<APInt> constIndex = getConstantIntIndex(op.getIndex());
+    if (!constIndex)
+      constIndex = getConstantIntIndex(adaptor.getIndex());
+
+    if (constIndex && constIndex->ult(arrayRefType.getNumElements())) {
+      Value elemAddr =
+          LLVM::GEPOp::create(rewriter, loc, ptrTy, i8Ty, adaptor.getInput(),
+                              byteOffset, LLVM::GEPNoWrapFlags::inbounds);
+      LLVM::StoreOp::create(rewriter, loc, adaptor.getElement(), elemAddr);
+    } else {
+      Value totalSize =
+          LLVM::ConstantOp::create(rewriter, loc, i64Ty, byteWidth);
+      // Defend against out-of-bounds accesses. We must avoid corrupting the
+      // array.
+      Value isInbounds = LLVM::ICmpOp::create(
+          rewriter, loc, LLVM::ICmpPredicate::ult, byteOffset, totalSize);
+      scf::IfOp::create(rewriter, loc, isInbounds, [&](OpBuilder &b, Location) {
+        Value elemAddr =
+            LLVM::GEPOp::create(b, loc, ptrTy, i8Ty, adaptor.getInput(),
+                                byteOffset, LLVM::GEPNoWrapFlags::inbounds);
+        LLVM::StoreOp::create(b, loc, adaptor.getElement(), elemAddr);
+        scf::YieldOp::create(b, loc);
+      });
+    }
 
     // Inject is pure; returns the same pointer (input buffer is modified
     // in-place and the pointer is forwarded as the result).
@@ -1654,18 +1694,28 @@ struct ArrayRefSliceOpLowering : public OpConversionPattern<ArrayRefSliceOp> {
     // Ensure the slice doesn't go out of bounds.
     size_t maxLowIndex =
         inputType.getNumElements() - resultType.getNumElements();
-    Value maxLowIndexVal =
-        LLVM::ConstantOp::create(rewriter, loc, i64Ty, maxLowIndex);
-    Value clampedLowIndex = LLVM::UMinOp::create(
-        rewriter, loc, i64Ty, adaptor.getLowIndex(), maxLowIndexVal);
+
+    std::optional<APInt> constIndex = getConstantIntIndex(op.getLowIndex());
+    if (!constIndex)
+      constIndex = getConstantIntIndex(adaptor.getLowIndex());
+
+    Value indexToUse;
+    if (constIndex && constIndex->ule(maxLowIndex)) {
+      indexToUse = adaptor.getLowIndex();
+    } else {
+      Value maxLowIndexVal =
+          LLVM::ConstantOp::create(rewriter, loc, i64Ty, maxLowIndex);
+      indexToUse = LLVM::UMinOp::create(rewriter, loc, i64Ty,
+                                        adaptor.getLowIndex(), maxLowIndexVal);
+    }
 
     // Byte offset = lowIndex * elemByteWidth.
     Value stride =
         LLVM::ConstantOp::create(rewriter, loc, i64Ty, elemByteWidth);
-    Value byteOffset =
-        LLVM::MulOp::create(rewriter, loc, clampedLowIndex, stride);
-    auto sliceAddr = LLVM::GEPOp::create(rewriter, loc, ptrTy, i8Ty,
-                                         adaptor.getInput(), byteOffset);
+    Value byteOffset = LLVM::MulOp::create(rewriter, loc, indexToUse, stride);
+    Value sliceAddr =
+        LLVM::GEPOp::create(rewriter, loc, ptrTy, i8Ty, adaptor.getInput(),
+                            byteOffset, LLVM::GEPNoWrapFlags::inbounds);
     rewriter.replaceOp(op, sliceAddr);
     return success();
   }
@@ -1800,6 +1850,10 @@ void LowerArcToLLVMPass::runOnOperation() {
         Builder builder(&getContext());
         func.setArgAttr(i, LLVM::LLVMDialect::getDereferenceableAttrName(),
                         builder.getI64IntegerAttr(byteWidth));
+        func.setArgAttr(i, LLVM::LLVMDialect::getNoAliasAttrName(),
+                        builder.getUnitAttr());
+        func.setArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName(),
+                        builder.getUnitAttr());
       }
     }
   }

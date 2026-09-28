@@ -166,6 +166,11 @@ static llvm::cl::opt<bool>
                    llvm::cl::init(true), llvm::cl::cat(mainCategory));
 
 static llvm::cl::opt<bool>
+    bufferizeArrays("bufferize-arrays",
+                    llvm::cl::desc("Bufferize arrays before lowering to LLVM"),
+                    llvm::cl::init(true), llvm::cl::cat(mainCategory));
+
+static llvm::cl::opt<bool>
     printDebugInfo("print-debug-info",
                    llvm::cl::desc("Print debug information"),
                    llvm::cl::init(false), llvm::cl::cat(mainCategory));
@@ -522,6 +527,7 @@ static LogicalResult processBuffer(
     ArcToLLVMOptions opts;
     opts.noGenerateDriver = noGenerateDriver;
     opts.noRuntime = noRuntime;
+    opts.bufferizeArrays = bufferizeArrays;
     std::string runtimeArgs;
     if (!jitVcdFile.empty()) {
       runtimeArgs += "vcd";
